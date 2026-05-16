@@ -38,6 +38,47 @@ class QLQuery(BaseModel):
     )
 
 
+class FixSuggestion(BaseModel):
+    fixed_code: str = Field(
+        description=(
+            "Corrected version of the surrounding code block (~10-20 lines). "
+            "Plain code only; do NOT wrap in markdown fences inside this field."
+        )
+    )
+    rationale: str = Field(
+        description="1-3 sentences explaining why the original is vulnerable and why the fix closes it."
+    )
+    extra_imports: list[str] = Field(
+        default_factory=list,
+        description="New top-level imports the fix introduces (module names only, e.g. ['shlex', 're']).",
+    )
+
+
+FIX_SYSTEM_PROMPT = """\
+You are a senior security engineer. You are given a single CodeQL finding and a
+window of source code around it. Propose the smallest safe fix.
+
+Output (enforced by Pydantic schema):
+- fixed_code: corrected version of the surrounding block. Plain code only.
+  Preserve indentation and surrounding context lines. Do NOT wrap in markdown.
+- rationale: 1-3 sentences on why the original is vulnerable and why the fix
+  closes the issue.
+- extra_imports: list of any new top-level module imports the fix introduces.
+
+Rules:
+1. Minimal change. Do not refactor unrelated code, rename variables, or move
+   surrounding logic.
+2. Prefer safe-by-default APIs (argv-style subprocess with shell=False,
+   parameterized SQL, strict allow-lists or regex validators) over trying to
+   sanitize a tainted value in place.
+3. If arbitrary command execution from HTTP input is the bug, the fix usually
+   includes refusing the operation or restricting it to an allow-list — say so.
+4. Match the original language's idioms (Python: f-strings vs format; Java:
+   PreparedStatement; etc.).
+5. Do not invent imports that don't exist.
+"""
+
+
 def _load_system_prompt() -> str:
     return (PROMPTS_DIR / "system_codeql.md").read_text(encoding="utf-8")
 
@@ -166,3 +207,38 @@ class LLMClient:
                 f"Claude returned no parsed output. stop_reason={response.stop_reason!r}"
             )
         return parsed
+
+    def suggest_fix(self, user_prompt: str) -> FixSuggestion | None:
+        """Call Claude with the fix-suggester system prompt; return FixSuggestion or None on failure.
+
+        Uses a separate, smaller system prompt (different breakpoint from query
+        generation). `effort=medium` because fix tasks are simpler than QL synthesis.
+        """
+        try:
+            response = self.client.messages.parse(
+                model=self.model,
+                max_tokens=2000,
+                thinking={"type": "adaptive"},
+                output_config={"effort": "medium"},
+                system=[
+                    {
+                        "type": "text",
+                        "text": FIX_SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                    }
+                ],
+                messages=[{"role": "user", "content": user_prompt}],
+                output_format=FixSuggestion,
+            )
+            usage = response.usage
+            log.info(
+                "Fix tokens: input=%d cache_read=%d cache_write=%d output=%d",
+                usage.input_tokens,
+                getattr(usage, "cache_read_input_tokens", 0) or 0,
+                getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                usage.output_tokens,
+            )
+            return response.parsed_output
+        except Exception as e:  # noqa: BLE001 -- non-fatal: report has no fix block
+            log.warning("Fix suggestion call failed: %s", e)
+            return None

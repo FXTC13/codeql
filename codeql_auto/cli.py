@@ -16,6 +16,7 @@ from .db_builder import (
     detect_language,
     normalize_language,
 )
+from .fix_suggester import suggest_fixes
 from .llm_client import LLMClient
 from .repair_loop import run_with_repair
 from .sarif_parser import parse_sarif, render_markdown
@@ -66,6 +67,20 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
         "--skip-db-build",
         action="store_true",
         help="Reuse an existing database at <output-dir>/db instead of rebuilding",
+    )
+    fixes = p.add_mutually_exclusive_group()
+    fixes.add_argument(
+        "--with-fixes",
+        dest="with_fixes",
+        action="store_true",
+        default=True,
+        help="Generate a fix suggestion per finding (default: on). One Claude call per finding.",
+    )
+    fixes.add_argument(
+        "--no-fixes",
+        dest="with_fixes",
+        action="store_false",
+        help="Skip fix suggestion generation. Faster and cheaper.",
     )
     p.add_argument("-v", "--verbose", action="store_true", help="Enable DEBUG logging")
 
@@ -156,8 +171,24 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         return 6
 
-    # 4. Parse SARIF + render report
+    # 4. Parse SARIF
     findings = parse_sarif(sarif_path, src_root=src)
+
+    # 5. (optional) Generate fix suggestion per finding
+    findings_with_fixes = None
+    if args.with_fixes and findings:
+        log.info("Generating fix suggestions for %d finding(s)...", len(findings))
+        findings_with_fixes = suggest_fixes(
+            client=client,
+            findings=findings,
+            src_root=src,
+            requirement=args.requirement,
+            language=lang,
+        )
+    elif args.with_fixes and not findings:
+        log.info("Skipping fix generation: no findings.")
+
+    # 6. Render report
     md = render_markdown(
         findings=findings,
         requirement=args.requirement,
@@ -167,6 +198,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         sarif_path=sarif_path,
         iterations=outcome.iterations,
         explanation=outcome.final_query.explanation,
+        findings_with_fixes=findings_with_fixes,
     )
     report_path.write_text(md, encoding="utf-8")
 
@@ -177,6 +209,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"✓ Report:    {report_path}")
     print(f"✓ Findings:  {len(findings)}")
     print(f"✓ LLM iterations: {outcome.iterations}")
+    if findings_with_fixes is not None:
+        n_fixes = sum(1 for p in findings_with_fixes if p.fix is not None)
+        print(f"✓ Fix suggestions: {n_fixes}/{len(findings)}")
     return 0
 
 

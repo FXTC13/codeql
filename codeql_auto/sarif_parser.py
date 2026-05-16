@@ -96,7 +96,25 @@ def render_markdown(
     sarif_path: Path,
     iterations: int,
     explanation: str,
+    findings_with_fixes: list | None = None,  # list[FindingWithFix] from fix_suggester
 ) -> str:
+    """Render the report.
+
+    If `findings_with_fixes` is provided, fix suggestions are inlined after each
+    finding's code block. It must align 1:1 with `findings` (same order).
+    """
+    fix_lookup = {}
+    if findings_with_fixes is not None:
+        if len(findings_with_fixes) != len(findings):
+            raise ValueError(
+                f"findings_with_fixes length ({len(findings_with_fixes)}) "
+                f"does not match findings length ({len(findings)})"
+            )
+        for i, pair in enumerate(findings_with_fixes):
+            fix_lookup[i] = pair.fix  # may be None
+
+    fixes_generated = sum(1 for f in fix_lookup.values() if f is not None)
+
     lines = [
         "# CodeQL Detection Report",
         "",
@@ -106,6 +124,12 @@ def render_markdown(
         f"- **Generated query**: `{query_path}`",
         f"- **SARIF**: `{sarif_path}`",
         f"- **LLM iterations until success**: {iterations}",
+    ]
+    if findings_with_fixes is not None:
+        lines.append(
+            f"- **Fix suggestions**: {fixes_generated}/{len(findings)} generated"
+        )
+    lines += [
         "",
         "## Query summary",
         "",
@@ -132,10 +156,37 @@ def render_markdown(
             "",
             f.message.strip(),
             "",
+            "**Vulnerable code:**",
+            "",
             "```",
             f.snippet,
             "```",
             "",
         ]
+
+        fix = fix_lookup.get(i - 1)
+        if fix is not None:
+            extras = ""
+            if fix.extra_imports:
+                extras = (
+                    " New imports: "
+                    + ", ".join(f"`{m}`" for m in fix.extra_imports)
+                    + "."
+                )
+            lines += [
+                "**Suggested fix:**",
+                "",
+                "```",
+                fix.fixed_code.rstrip(),
+                "```",
+                "",
+                f"_Rationale_: {fix.rationale.strip()}{extras}",
+                "",
+            ]
+        elif findings_with_fixes is not None:
+            lines += [
+                "_Fix suggestion: not generated (LLM call failed; see logs)._",
+                "",
+            ]
 
     return "\n".join(lines)

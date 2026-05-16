@@ -51,7 +51,20 @@ Outputs land in `out/smoke/`:
 - `db/` — CodeQL database
 - `query.ql` — the final query Claude produced (after any repair iterations)
 - `results.sarif` — raw SARIF for IDE / Code Scanning consumption
-- `report.md` — human-readable report with code snippets
+- `report.md` — human-readable report with code snippets and (by default) a
+  suggested fix per finding
+
+### Fix suggestions
+
+By default, after the SARIF results are parsed the tool spends one extra Claude
+call per finding to produce a minimal corrective patch (the `--with-fixes`
+flag, on by default). Each finding's section in `report.md` gets:
+
+- **Vulnerable code** — context lines around the SARIF hit
+- **Suggested fix** — the corrected version with rationale + any new imports
+
+Use `--no-fixes` to skip this step (faster and cheaper — useful when running
+against a large codebase with many findings, or when you only need raw SARIF).
 
 ### Compiled languages
 
@@ -97,6 +110,7 @@ python -m codeql_auto.cli run --help
 | `--model` | `claude-opus-4-7` | Claude model ID |
 | `--effort` | `high` | `low` \| `medium` \| `high` \| `max` (max is Opus-only) |
 | `--skip-db-build` | off | Reuse existing `<output-dir>/db` |
+| `--with-fixes` / `--no-fixes` | on | Generate one fix suggestion per finding (1 extra Claude call each) |
 | `-v` | off | DEBUG logging |
 
 ## Exit codes
