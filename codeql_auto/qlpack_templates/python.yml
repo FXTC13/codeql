@@ -1,0 +1,4 @@
+name: codeql-auto/python-query
+version: 0.0.1
+dependencies:
+  codeql/python-all: "*"

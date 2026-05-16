@@ -1,0 +1,4 @@
+name: codeql-auto/cpp-query
+version: 0.0.1
+dependencies:
+  codeql/cpp-all: "*"
